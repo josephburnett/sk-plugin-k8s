@@ -12,6 +12,7 @@ require (
 	k8s.io/metrics v0.0.0
 )
 
+// https://github.com/kubernetes/kubernetes/issues/79384#issuecomment-505627280
 replace (
 	k8s.io/api => k8s.io/api v0.0.0-20190620084959-7cf5895f2711
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.0.0-20190620085554-14e95df34f1f
