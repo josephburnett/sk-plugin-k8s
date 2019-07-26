@@ -2,7 +2,15 @@ module github.com/josephburnett/sk-plugin-k8s
 
 go 1.12
 
-require k8s.io/kubernetes v1.15.0
+require (
+	github.com/hashicorp/go-plugin v1.0.1
+	github.com/josephburnett/sk-plugin v0.0.0-20190726113842-f4cc79709047
+	k8s.io/api v0.0.0
+	k8s.io/apimachinery v0.0.0
+	k8s.io/client-go v0.0.0
+	k8s.io/kubernetes v1.15.0
+	k8s.io/metrics v0.0.0
+)
 
 replace (
 	k8s.io/api => k8s.io/api v0.0.0-20190620084959-7cf5895f2711

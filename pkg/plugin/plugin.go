@@ -1,4 +1,4 @@
-package podautoscaler
+package plugin
 
 import (
 	"bytes"
