@@ -22,6 +22,8 @@ import (
 	emfake "k8s.io/metrics/pkg/client/external_metrics/fake"
 
 	podautoscaler "k8s.io/kubernetes/pkg/controller/podautoscaler"
+
+	_ "k8s.io/kubernetes/pkg/apis/autoscaling/install"
 )
 
 // BEGIN INTERFACE
