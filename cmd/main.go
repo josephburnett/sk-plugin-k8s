@@ -2,61 +2,99 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/hashicorp/go-plugin"
 	k8splugin "github.com/josephburnett/sk-plugin-k8s/pkg/plugin"
 	"github.com/josephburnett/sk-plugin/pkg/skplug"
+	"github.com/josephburnett/sk-plugin/pkg/skplug/proto"
 )
 
-type Autoscaler struct {
-	hpas    map[string]k8splugin.SkAutoscaler
-	hpasMux sync.RWMutex
+const (
+	pluginType = "hpa.v2beta2.autoscaling.k8s.io"
+)
 
-	i int32
+type partition string
+type pod_name string
+
+var _ skplug.Plugin = &pluginServer{}
+
+type pluginServer struct {
+	mux         sync.RWMutex
+	autoscalers map[partition]*k8splugin.Autoscaler
 }
 
-func NewAutoscaler() *Autoscaler {
-	return &Autoscaler{
-		hpas: make(map[string]k8splugin.SkAutoscaler),
-		i:    1,
+func newPluginServer() *pluginServer {
+	return &pluginServer{
+		autoscalers: make(map[partition]*k8splugin.Autoscaler),
 	}
 }
 
-func (a *Autoscaler) Create(yaml string, c skplug.Cluster) (key string, err error) {
-	key = strconv.Itoa(int(atomic.AddInt32(&a.i, 1)))
-	hpa, err := k8splugin.NewSkAutoscaler(yaml)
-	if err != nil {
-		return "", err
+func (p *pluginServer) Event(part string, time int64, typ proto.EventType, object skplug.Object) error {
+	switch o := object.(type) {
+	case *skplug.Autoscaler:
+		switch typ {
+		case proto.EventType_CREATE:
+			return p.createAutoscaler(partition(part), o)
+		case proto.EventType_UPDATE:
+			return fmt.Errorf("update autoscaler event not supported")
+		case proto.EventType_DELETE:
+			return p.deleteAutoscaler(partition(part))
+		default:
+			return fmt.Errorf("unhandled event type: %v", typ)
+		}
+	case *skplug.Pod:
+		// TODO: handle pod CRUD
+		return nil
+	default:
+		return fmt.Errorf("unhandled object type: %T", object)
 	}
-	a.hpasMux.Lock()
-	defer a.hpasMux.Unlock()
-	a.hpas[key] = hpa
-	return key, nil
 }
 
-func (a *Autoscaler) Scale(key string) (rec int32, err error) {
-	a.hpasMux.RLock()
-	hpa, ok := a.hpas[key]
-	a.hpasMux.RUnlock()
+func (p *pluginServer) Stat(part string, stat []*proto.Stat) error {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	a, ok := p.autoscalers[partition(part)]
 	if !ok {
-		return 0, fmt.Errorf("Autoscaler not found: %v", key)
+		return fmt.Errorf("stat for non-existant autoscaler partition: %v", part)
 	}
-	// TODO: pass in time
-	return hpa.Scale(0)
+	return a.Stat(stat)
 }
 
-func (a *Autoscaler) Stat(stat []*skplug.Stat) error {
-	// TODO: pass through stats
+func (p *pluginServer) Scale(part string, time int64) (rec int32, err error) {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	a, ok := p.autoscalers[partition(part)]
+	if !ok {
+		return 0, fmt.Errorf("scale for non-existant autoscaler partition: %v", part)
+	}
+	return a.Scale(time)
+}
+
+func (p *pluginServer) createAutoscaler(part partition, a *skplug.Autoscaler) error {
+	if a.Type != pluginType {
+		return fmt.Errorf("unsupported autoscaler type %v. this plugin supports %v", a.Type, pluginType)
+	}
+
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	if _, ok := p.autoscalers[part]; ok {
+		return fmt.Errorf("duplicate create autoscaler event in partition %v", part)
+	}
+	autoscaler, err := k8splugin.NewAutoscaler(a.Yaml)
+	if err != nil {
+		return err
+	}
+	p.autoscalers[part] = autoscaler
 	return nil
 }
 
-func (a *Autoscaler) Delete(key string) error {
-	a.hpasMux.Lock()
-	defer a.hpasMux.Unlock()
-	delete(a.hpas, key)
+func (p *pluginServer) deleteAutoscaler(part partition) error {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	if _, ok := p.autoscalers[part]; !ok {
+		return fmt.Errorf("delete autoscaler event for non-existant partition %v", part)
+	}
 	return nil
 }
 
@@ -64,7 +102,7 @@ func main() {
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: skplug.Handshake,
 		Plugins: map[string]plugin.Plugin{
-			"autoscaler": &skplug.AutoscalerPlugin{Impl: NewAutoscaler()},
+			"autoscaler": &skplug.AutoscalerPlugin{Impl: newPluginServer()},
 		},
 
 		// A non-nil value here enables gRPC serving for this plugin...

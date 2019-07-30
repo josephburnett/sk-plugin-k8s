@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/josephburnett/sk-plugin/pkg/skplug/proto"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2beta2"
 	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
@@ -26,50 +27,14 @@ import (
 	_ "k8s.io/kubernetes/pkg/apis/autoscaling/install"
 )
 
-// BEGIN INTERFACE
-
-const (
-	SkInterfaceVersion = 1
-
-	SkMetricCpu         = "cpu"
-	SkMetricConcurrency = "concurrency"
-
-	SkStatePending     = "pending"
-	SkStateRunning     = "running"
-	SkStateReady       = "ready"
-	SkStateTerminating = "terminating"
-)
-
-type SkPlugin interface {
-	NewAutoscaler(SkEnvironment, string) SkAutoscaler
+type Autoscaler struct {
+	controller *podautoscaler.HorizontalController
+	hpa        *autoscalingv1.HorizontalPodAutoscaler
+	pods       map[string]*proto.Pod
+	stats      map[string]*proto.Stat
 }
 
-type SkEnvironment interface {
-	Pods() []SkPod
-}
-
-type SkPod interface {
-	Name() string
-	State() string
-	LastTransistion() int64
-	CpuRequest() int32
-}
-
-type SkAutoscaler interface {
-	Scale(int64) (int32, error)
-	Stat(SkStat) error
-}
-
-type SkStat interface {
-	Time() int64
-	PodName() string
-	Metric() string
-	Value() int32
-}
-
-// END INTERFACE
-
-func NewSkAutoscaler(hpaYaml string) (SkAutoscaler, error) {
+func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 
 	client := &fake.Clientset{}
 	evtNamespacer := client.CoreV1()
@@ -104,7 +69,7 @@ func NewSkAutoscaler(hpaYaml string) (SkAutoscaler, error) {
 	}
 	hpav1 := hpaRaw.(*autoscalingv1.HorizontalPodAutoscaler)
 
-	return &kubernetesAutoscaler{
+	return &Autoscaler{
 		controller: podautoscaler.NewHorizontalController(
 			evtNamespacer,
 			scaleNamespacer,
@@ -120,29 +85,24 @@ func NewSkAutoscaler(hpaYaml string) (SkAutoscaler, error) {
 			delayOfInitialReadinessStatus,
 		),
 		hpa:   hpav1,
-		stats: make(map[string]SkStat),
+		pods:  make(map[string]*proto.Pod),
+		stats: make(map[string]*proto.Stat),
 	}, nil
 }
 
-type kubernetesAutoscaler struct {
-	controller *podautoscaler.HorizontalController
-	hpa        *autoscalingv1.HorizontalPodAutoscaler
-	stats      map[string]SkStat
+func (a *Autoscaler) Stat(stat []*proto.Stat) error {
+	for _, s := range stat {
+		a.stats[s.PodName] = s
+		// TODO: garbage collect stats after downscale stabilization window.
+	}
+	return nil
 }
 
-var _ SkAutoscaler = (*kubernetesAutoscaler)(nil)
-
-func (ka *kubernetesAutoscaler) Scale(now int64) (int32, error) {
-	if err := ka.controller.ReconcileAutoscaler(ka.hpa, "hpa"); err != nil {
+func (a *Autoscaler) Scale(now int64) (int32, error) {
+	if err := a.controller.ReconcileAutoscaler(a.hpa, "hpa"); err != nil {
 		return 0, err
 	}
-	return ka.hpa.Status.DesiredReplicas, nil
-}
-
-func (ka *kubernetesAutoscaler) Stat(stat SkStat) error {
-	ka.stats[stat.PodName()] = stat
-	// TODO: garbage collect stats after downscale stabilization window.
-	return nil
+	return a.hpa.Status.DesiredReplicas, nil
 }
 
 // Forked from horizontal.go.

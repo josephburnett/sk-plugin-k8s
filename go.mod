@@ -38,3 +38,5 @@ replace (
 
 // Checkout https://github.com/josephburnett/kubernetes.git branch plugin
 replace k8s.io/kubernetes => ../kubernetes
+
+replace github.com/josephburnett/sk-plugin => ../sk-plugin
