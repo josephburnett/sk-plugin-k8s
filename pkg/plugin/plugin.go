@@ -25,6 +25,7 @@ import (
 	podautoscaler "k8s.io/kubernetes/pkg/controller/podautoscaler"
 
 	_ "k8s.io/kubernetes/pkg/apis/autoscaling/install"
+	_ "k8s.io/kubernetes/pkg/apis/extensions/install"
 )
 
 type Autoscaler struct {
