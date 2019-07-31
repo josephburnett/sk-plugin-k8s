@@ -10,12 +10,14 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2beta2"
 	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	scalefake "k8s.io/client-go/scale/fake"
+	core "k8s.io/client-go/testing"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
@@ -72,7 +74,7 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 	}
 	hpav1 := hpaRaw.(*autoscalingv1.HorizontalPodAutoscaler)
 
-	return &Autoscaler{
+	autoscaler := &Autoscaler{
 		controller: podautoscaler.NewHorizontalController(
 			evtNamespacer,
 			scaleNamespacer,
@@ -90,7 +92,37 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 		hpa:   hpav1,
 		pods:  make(map[string]*proto.Pod),
 		stats: make(map[string]*proto.Stat),
-	}, nil
+	}
+
+	client.AddReactor("update", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		// log.Printf("update horizontalpodautoscaler")
+		autoscaler.hpa = action.(core.UpdateAction).GetObject().(*autoscalingv1.HorizontalPodAutoscaler)
+		return true, nil, nil
+	})
+	scaleNamespacer.AddReactor("get", "deployments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		// log.Printf("get deployments")
+		obj := &autoscalingv1.Scale{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      hpav1.Name,
+				Namespace: hpav1.Namespace,
+			},
+			Spec: autoscalingv1.ScaleSpec{
+				Replicas: int32(len(autoscaler.pods)),
+			},
+			Status: autoscalingv1.ScaleStatus{
+				// TODO: count of only ready pods.
+				Replicas: int32(len(autoscaler.pods)),
+				Selector: "",
+			},
+		}
+		return true, obj, nil
+	})
+	scaleNamespacer.AddReactor("update", "deployments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		// log.Printf("update deployments scale")
+		return false, nil, nil
+	})
+
+	return autoscaler, nil
 }
 
 func (a *Autoscaler) Stat(stat []*proto.Stat) error {

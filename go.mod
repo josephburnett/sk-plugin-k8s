@@ -8,6 +8,7 @@ require (
 	k8s.io/api v0.0.0
 	k8s.io/apimachinery v0.0.0
 	k8s.io/client-go v0.0.0
+	k8s.io/klog v0.3.1
 	k8s.io/kubernetes v1.15.0
 	k8s.io/metrics v0.0.0
 )

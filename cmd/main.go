@@ -1,13 +1,16 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/hashicorp/go-plugin"
 	k8splugin "github.com/josephburnett/sk-plugin-k8s/pkg/plugin"
 	"github.com/josephburnett/sk-plugin/pkg/skplug"
 	"github.com/josephburnett/sk-plugin/pkg/skplug/proto"
+	"k8s.io/klog"
 )
 
 const (
@@ -94,6 +97,7 @@ func (p *pluginServer) createAutoscaler(part partition, a *skplug.Autoscaler) er
 		return err
 	}
 	p.autoscalers[part] = autoscaler
+	log.Println("created autoscaler", part)
 	return nil
 }
 
@@ -103,6 +107,7 @@ func (p *pluginServer) deleteAutoscaler(part partition) error {
 	if _, ok := p.autoscalers[part]; !ok {
 		return fmt.Errorf("delete autoscaler event for non-existant partition %v", part)
 	}
+	log.Println("deleted autoscaler", part)
 	return nil
 }
 
@@ -137,6 +142,19 @@ func (p *pluginServer) deletePod(part partition, pod *skplug.Pod) error {
 }
 
 func main() {
+	klog.InitFlags(flag.CommandLine)
+	klog.Infof("Starting Skenario Kubernetes HPA plugin.")
+	// err := flag.CommandLine.Set("v", "4")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// err = flag.CommandLine.Set("vmodule", "horizontal*=4")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// flag.CommandLine.VisitAll(func(f *flag.Flag) {
+	// 	klog.Infof("%v=%v", f.Name, f.Value)
+	// })
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: skplug.Handshake,
 		Plugins: map[string]plugin.Plugin{
