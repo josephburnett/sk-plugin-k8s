@@ -3,13 +3,16 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/josephburnett/sk-plugin/pkg/skplug/proto"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2beta2"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -21,6 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
+	metricsapi "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 	cmfake "k8s.io/metrics/pkg/client/custom_metrics/fake"
 	emfake "k8s.io/metrics/pkg/client/external_metrics/fake"
@@ -112,7 +116,7 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 			Status: autoscalingv1.ScaleStatus{
 				// TODO: count of only ready pods.
 				Replicas: int32(len(autoscaler.pods)),
-				Selector: "",
+				Selector: "key=value",
 			},
 		}
 		return true, obj, nil
@@ -120,6 +124,38 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 	scaleNamespacer.AddReactor("update", "deployments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		// log.Printf("update deployments scale")
 		return false, nil, nil
+	})
+	testMetricsClient.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		log.Printf("metrics list pods")
+		metrics := &metricsapi.PodMetricsList{}
+		for _, stat := range autoscaler.stats {
+			podMetric := metricsapi.PodMetrics{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      stat.PodName,
+					Namespace: "",
+					Labels:    map[string]string{"key": "value"},
+				},
+				// TODO: get this (somehow) from Scale(now).
+				Timestamp: metav1.Time{Time: time.Now()},
+				Window:    metav1.Duration{Duration: time.Minute},
+				Containers: []metricsapi.ContainerMetrics{
+					{
+						Name: "container",
+						Usage: v1.ResourceList{
+							v1.ResourceCPU: *resource.NewMilliQuantity(
+								int64(stat.Value),
+								resource.DecimalSI),
+							v1.ResourceMemory: *resource.NewQuantity(
+								int64(1024*1024),
+								resource.BinarySI),
+						},
+					},
+				},
+			}
+			metrics.Items = append(metrics.Items, podMetric)
+		}
+
+		return true, metrics, nil
 	})
 
 	return autoscaler, nil
