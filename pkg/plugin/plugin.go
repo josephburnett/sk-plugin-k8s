@@ -3,6 +3,7 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/josephburnett/sk-plugin/pkg/skplug/proto"
@@ -29,6 +30,7 @@ import (
 )
 
 type Autoscaler struct {
+	mux        sync.RWMutex
 	controller *podautoscaler.HorizontalController
 	hpa        *autoscalingv1.HorizontalPodAutoscaler
 	pods       map[string]*proto.Pod
@@ -92,6 +94,8 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 }
 
 func (a *Autoscaler) Stat(stat []*proto.Stat) error {
+	a.mux.Lock()
+	defer a.mux.Unlock()
 	for _, s := range stat {
 		a.stats[s.PodName] = s
 		// TODO: garbage collect stats after downscale stabilization window.
@@ -100,10 +104,42 @@ func (a *Autoscaler) Stat(stat []*proto.Stat) error {
 }
 
 func (a *Autoscaler) Scale(now int64) (int32, error) {
+	a.mux.Lock()
+	defer a.mux.Unlock()
 	if err := a.controller.ReconcileAutoscaler(a.hpa, "hpa"); err != nil {
 		return 0, err
 	}
 	return a.hpa.Status.DesiredReplicas, nil
+}
+
+func (a *Autoscaler) CreatePod(pod *proto.Pod) error {
+	a.mux.Lock()
+	defer a.mux.Unlock()
+	if _, ok := a.pods[pod.Name]; ok {
+		return fmt.Errorf("duplicate create pod event")
+	}
+	a.pods[pod.Name] = pod
+	return nil
+}
+
+func (a *Autoscaler) UpdatePod(pod *proto.Pod) error {
+	a.mux.Lock()
+	defer a.mux.Unlock()
+	if _, ok := a.pods[pod.Name]; !ok {
+		return fmt.Errorf("update pod event for non-existant pod")
+	}
+	a.pods[pod.Name] = pod
+	return nil
+}
+
+func (a *Autoscaler) DeletePod(pod *proto.Pod) error {
+	a.mux.Lock()
+	defer a.mux.Unlock()
+	if _, ok := a.pods[pod.Name]; !ok {
+		return fmt.Errorf("delete pod event for non-existant pod")
+	}
+	delete(a.pods, pod.Name)
+	return nil
 }
 
 // Forked from horizontal.go.
