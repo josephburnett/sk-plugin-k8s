@@ -104,9 +104,12 @@ func (p *pluginServer) createAutoscaler(part partition, a *skplug.Autoscaler) er
 func (p *pluginServer) deleteAutoscaler(part partition) error {
 	p.mux.Lock()
 	defer p.mux.Unlock()
-	if _, ok := p.autoscalers[part]; !ok {
+	autoscaler, ok := p.autoscalers[part]
+	if !ok {
 		return fmt.Errorf("delete autoscaler event for non-existant partition %v", part)
 	}
+	log.Printf("final hpa state: %v", autoscaler.String())
+	delete(p.autoscalers, part)
 	log.Println("deleted autoscaler", part)
 	return nil
 }

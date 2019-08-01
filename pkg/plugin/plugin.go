@@ -174,7 +174,7 @@ func (a *Autoscaler) Stat(stat []*proto.Stat) error {
 func (a *Autoscaler) Scale(now int64) (int32, error) {
 	a.mux.Lock()
 	defer a.mux.Unlock()
-	if err := a.controller.ReconcileAutoscaler(a.hpa, "hpa"); err != nil {
+	if err := a.controller.ReconcileAutoscaler(time.Unix(0, now), a.hpa, "hpa"); err != nil {
 		return 0, err
 	}
 	return a.hpa.Status.DesiredReplicas, nil
@@ -208,6 +208,10 @@ func (a *Autoscaler) DeletePod(pod *proto.Pod) error {
 	}
 	delete(a.pods, pod.Name)
 	return nil
+}
+
+func (a *Autoscaler) String() string {
+	return fmt.Sprintf("+%v", a.hpa)
 }
 
 // Forked from horizontal.go.
