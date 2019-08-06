@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,13 +15,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/informers"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	scalefake "k8s.io/client-go/scale/fake"
 	core "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
@@ -43,6 +48,68 @@ type Autoscaler struct {
 	stats      map[string]*proto.Stat
 }
 
+// Create a non-concurrent, non-cached informer for simulation.
+
+var _ coreinformers.PodInformer = &fakePodInformer{}
+
+type fakePodInformer struct {
+	lister   corelisters.PodLister
+	informer cache.SharedIndexInformer
+}
+
+func (f *fakePodInformer) Informer() cache.SharedIndexInformer {
+	return f.informer
+}
+
+func (f *fakePodInformer) Lister() corelisters.PodLister {
+	return f.lister
+}
+
+type fakeSharedIndexInformer struct{}
+
+func (f *fakeSharedIndexInformer) AddEventHandler(_ cache.ResourceEventHandler) {}
+func (f *fakeSharedIndexInformer) AddEventHandlerWithResyncPeriod(_ cache.ResourceEventHandler, _ time.Duration) {
+}
+func (f *fakeSharedIndexInformer) GetStore() cache.Store {
+	panic("unimplemented")
+}
+func (f *fakeSharedIndexInformer) GetController() cache.Controller {
+	panic("unimplemented")
+}
+func (f *fakeSharedIndexInformer) Run(_ <-chan struct{}) {}
+func (f *fakeSharedIndexInformer) HasSynced() bool {
+	return true
+}
+func (f *fakeSharedIndexInformer) LastSyncResourceVersion() string {
+	panic("unimplemented")
+}
+func (f *fakeSharedIndexInformer) AddIndexers(_ cache.Indexers) error {
+	panic("unimplemented")
+}
+func (f *fakeSharedIndexInformer) GetIndexer() cache.Indexer {
+	panic("unimplemented")
+}
+
+// This plugin doesn't support namespaces.
+var _ corelisters.PodLister = &fakePodLister{}
+var _ corelisters.PodNamespaceLister = &fakePodLister{}
+
+type fakePodLister struct {
+	autoscaler *Autoscaler
+}
+
+func (f *fakePodLister) List(selector labels.Selector) (ret []*v1.Pod, err error) {
+	return f.autoscaler.listPods()
+}
+
+func (f *fakePodLister) Pods(namespace string) corelisters.PodNamespaceLister {
+	return f
+}
+
+func (f *fakePodLister) Get(name string) (*v1.Pod, error) {
+	panic("unimplemented")
+}
+
 func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 
 	client := &fake.Clientset{}
@@ -60,7 +127,16 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 	)
 	informerFactory := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
 	hpaInformer := informerFactory.Autoscaling().V1().HorizontalPodAutoscalers()
-	podInformer := informerFactory.Core().V1().Pods()
+
+	autoscaler := &Autoscaler{}
+
+	podInformer := &fakePodInformer{
+		lister: &fakePodLister{
+			autoscaler: autoscaler,
+		},
+		informer: &fakeSharedIndexInformer{},
+	}
+
 	resyncPeriod := controller.NoResyncPeriodFunc()
 	downscaleStabilizationWindow := 5 * time.Minute
 	tolerance := 0.1
@@ -78,30 +154,40 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 	}
 	hpav1 := hpaRaw.(*autoscalingv1.HorizontalPodAutoscaler)
 
-	autoscaler := &Autoscaler{
-		controller: podautoscaler.NewHorizontalController(
-			evtNamespacer,
-			scaleNamespacer,
-			hpaNamespacer,
-			mapper,
-			metricsClient,
-			hpaInformer,
-			podInformer,
-			resyncPeriod,
-			downscaleStabilizationWindow,
-			tolerance,
-			cpuInitializationPeriod,
-			delayOfInitialReadinessStatus,
-		),
-		hpa:   hpav1,
-		pods:  make(map[string]*proto.Pod),
-		stats: make(map[string]*proto.Stat),
-	}
+	autoscaler.controller = podautoscaler.NewHorizontalController(
+		evtNamespacer,
+		scaleNamespacer,
+		hpaNamespacer,
+		mapper,
+		metricsClient,
+		hpaInformer,
+		podInformer,
+		resyncPeriod,
+		downscaleStabilizationWindow,
+		tolerance,
+		cpuInitializationPeriod,
+		delayOfInitialReadinessStatus,
+	)
+	autoscaler.hpa = hpav1
+	autoscaler.pods = make(map[string]*proto.Pod)
+	autoscaler.stats = make(map[string]*proto.Stat)
 
 	client.AddReactor("update", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		// log.Printf("update horizontalpodautoscaler")
 		autoscaler.hpa = action.(core.UpdateAction).GetObject().(*autoscalingv1.HorizontalPodAutoscaler)
 		return true, nil, nil
+	})
+	client.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		log.Printf("list pods")
+		pods, err := autoscaler.listPods()
+		if err != nil {
+			return false, nil, err
+		}
+		obj := &v1.PodList{}
+		for _, pod := range pods {
+			obj.Items = append(obj.Items, *pod)
+		}
+		return true, obj, nil
 	})
 	scaleNamespacer.AddReactor("get", "deployments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		// log.Printf("get deployments")
@@ -126,9 +212,14 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 		return false, nil, nil
 	})
 	testMetricsClient.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		log.Printf("metrics list pods")
+		// log.Printf("metrics list pods")
 		metrics := &metricsapi.PodMetricsList{}
-		for _, stat := range autoscaler.stats {
+		for _, pod := range autoscaler.pods {
+			stat, ok := autoscaler.stats[pod.Name]
+			var cpu int32 = 0
+			if ok {
+				cpu = stat.Value
+			}
 			podMetric := metricsapi.PodMetrics{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      stat.PodName,
@@ -143,7 +234,7 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 						Name: "container",
 						Usage: v1.ResourceList{
 							v1.ResourceCPU: *resource.NewMilliQuantity(
-								int64(stat.Value),
+								int64(cpu),
 								resource.DecimalSI),
 							v1.ResourceMemory: *resource.NewQuantity(
 								int64(1024*1024),
@@ -159,6 +250,51 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 	})
 
 	return autoscaler, nil
+}
+
+func (a *Autoscaler) listPods() ([]*v1.Pod, error) {
+	pods := make([]*v1.Pod, 0)
+	// TODO: change phase based on proto state enum.
+	podPhase := v1.PodRunning
+	podReadiness := v1.ConditionTrue
+	for _, pod := range a.pods {
+		// TODO: pass pod start time in proto.
+		podStartTime := metav1.NewTime(time.Unix(0, pod.LastTransition))
+		pod := &v1.Pod{
+			Status: v1.PodStatus{
+				Phase: podPhase,
+				Conditions: []v1.PodCondition{
+					{
+						Type:               v1.PodReady,
+						Status:             podReadiness,
+						LastTransitionTime: podStartTime,
+					},
+				},
+				StartTime: &podStartTime,
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: "",
+				Labels: map[string]string{
+					"key": "value",
+				},
+			},
+
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceCPU: resource.MustParse(strconv.Itoa(int(pod.CpuRequest))),
+							},
+						},
+					},
+				},
+			},
+		}
+		pods = append(pods, pod)
+	}
+	return pods, nil
 }
 
 func (a *Autoscaler) Stat(stat []*proto.Stat) error {
