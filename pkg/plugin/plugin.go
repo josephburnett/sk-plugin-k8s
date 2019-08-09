@@ -212,7 +212,7 @@ func NewAutoscaler(hpaYaml string) (*Autoscaler, error) {
 		return false, nil, nil
 	})
 	testMetricsClient.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		// log.Printf("metrics list pods")
+		// log.Printf("metrics list pods\n")
 		metrics := &metricsapi.PodMetricsList{}
 		for _, pod := range autoscaler.pods {
 			stat, ok := autoscaler.stats[pod.Name]
@@ -285,7 +285,7 @@ func (a *Autoscaler) listPods() ([]*v1.Pod, error) {
 					{
 						Resources: v1.ResourceRequirements{
 							Requests: v1.ResourceList{
-								v1.ResourceCPU: resource.MustParse(strconv.Itoa(int(pod.CpuRequest))),
+								v1.ResourceCPU: resource.MustParse(strconv.Itoa(int(pod.CpuRequest)) + "m"),
 							},
 						},
 					},
