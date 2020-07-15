@@ -301,7 +301,10 @@ func (a *Autoscaler) Stat(stat []*proto.Stat) error {
 	a.mux.Lock()
 	defer a.mux.Unlock()
 	for _, s := range stat {
-		a.stats[s.PodName] = s
+		//skip all metrics apart from cpu_millis
+		if s.Type == proto.MetricType_CPU_MILLIS {
+			a.stats[s.PodName] = s
+		}
 		// TODO: garbage collect stats after downscale stabilization window.
 	}
 	return nil
